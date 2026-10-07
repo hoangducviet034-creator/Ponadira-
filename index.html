@@ -1,0 +1,489 @@
+package com.ponadira.launcher
+
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
+
+// ============================================================
+// PONADIRA LAUNCHER
+// Single-file Android MVP / Phase 2
+// ============================================================
+
+data class MinecraftVersion(
+    val id: String,
+    val type: String,
+    val url: String
+)
+
+data class LaunchPlan(
+    val version: String,
+    val javaMajor: Int,
+    val mainClass: String,
+    val gameDirectory: String,
+    val username: String
+)
+
+object JavaSelector {
+
+    fun select(version: String): Int {
+        return when {
+            version.startsWith("1.21") -> 21
+            version.startsWith("1.20.5") -> 21
+            version.startsWith("1.20.6") -> 21
+
+            version.startsWith("1.20") -> 17
+            version.startsWith("1.19") -> 17
+            version.startsWith("1.18") -> 17
+
+            else -> 8
+        }
+    }
+}
+
+object MojangRepository {
+
+    private const val MANIFEST =
+        "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
+
+    suspend fun getVersions(): List<MinecraftVersion> {
+
+        return withContext(Dispatchers.IO) {
+
+            val connection =
+                URL(MANIFEST).openConnection()
+                        as HttpURLConnection
+
+            connection.requestMethod = "GET"
+            connection.connectTimeout = 15000
+            connection.readTimeout = 15000
+
+            try {
+
+                val json =
+                    connection.inputStream
+                        .bufferedReader()
+                        .use { it.readText() }
+
+                val root = JSONObject(json)
+
+                val array =
+                    root.getJSONArray("versions")
+
+                val result =
+                    mutableListOf<MinecraftVersion>()
+
+                for (i in 0 until array.length()) {
+
+                    val item =
+                        array.getJSONObject(i)
+
+                    result += MinecraftVersion(
+                        id = item.getString("id"),
+                        type = item.getString("type"),
+                        url = item.getString("url")
+                    )
+                }
+
+                result
+
+            } finally {
+                connection.disconnect()
+            }
+        }
+    }
+}
+
+object LibraryResolver {
+
+    fun mavenPath(name: String): String {
+
+        val parts = name.split(":")
+
+        require(parts.size >= 3)
+
+        val group =
+            parts[0].replace(".", "/")
+
+        val artifact =
+            parts[1]
+
+        val version =
+            parts[2]
+
+        return "$group/$artifact/$version/" +
+                "$artifact-$version.jar"
+    }
+}
+
+object LaunchPlanBuilder {
+
+    fun build(
+        version: MinecraftVersion,
+        username: String
+    ): LaunchPlan {
+
+        val java =
+            JavaSelector.select(version.id)
+
+        return LaunchPlan(
+            version = version.id,
+            javaMajor = java,
+            mainClass = "net.minecraft.client.main.Main",
+            gameDirectory = "minecraft",
+            username = username
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+class MainActivity : ComponentActivity() {
+
+    override fun onCreate(
+        savedInstanceState: Bundle?
+    ) {
+        super.onCreate(savedInstanceState)
+
+        setContent {
+
+            MaterialTheme {
+
+                PonadiraLauncher()
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun PonadiraLauncher() {
+
+    var versions by remember {
+        mutableStateOf<List<MinecraftVersion>>(
+            emptyList()
+        )
+    }
+
+    var selected by remember {
+        mutableStateOf<MinecraftVersion?>(null)
+    }
+
+    var loading by remember {
+        mutableStateOf(false)
+    }
+
+    var error by remember {
+        mutableStateOf<String?>(null)
+    }
+
+    var username by remember {
+        mutableStateOf("Player")
+    }
+
+    LaunchedEffect(Unit) {
+
+        loading = true
+
+        try {
+
+            versions =
+                MojangRepository.getVersions()
+
+        } catch (e: Exception) {
+
+            error =
+                e.message ?: "Unknown error"
+
+        }
+
+        loading = false
+    }
+
+    Scaffold(
+
+        topBar = {
+
+            TopAppBar(
+
+                title = {
+                    Text(
+                        "Ponadira Launcher"
+                    )
+                }
+            )
+        }
+
+    ) { padding ->
+
+        Column(
+
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(16.dp)
+
+        ) {
+
+            Text(
+                text = "Minecraft Java Launcher",
+                style =
+                    MaterialTheme
+                        .typography
+                        .headlineSmall
+            )
+
+            Spacer(
+                Modifier.height(12.dp)
+            )
+
+            OutlinedTextField(
+
+                value = username,
+
+                onValueChange = {
+                    username = it
+                },
+
+                modifier =
+                    Modifier.fillMaxWidth(),
+
+                label = {
+                    Text("Username")
+                },
+
+                singleLine = true
+            )
+
+            Spacer(
+                Modifier.height(16.dp)
+            )
+
+            when {
+
+                loading -> {
+
+                    CircularProgressIndicator()
+
+                    Spacer(
+                        Modifier.height(12.dp)
+                    )
+
+                    Text(
+                        "Đang tải Minecraft versions..."
+                    )
+                }
+
+                error != null -> {
+
+                    Text(
+                        "Lỗi: $error"
+                    )
+
+                    Spacer(
+                        Modifier.height(8.dp)
+                    )
+
+                    Button(
+                        onClick = {
+                            error = null
+                            loading = true
+                        }
+                    ) {
+                        Text("Thử lại")
+                    }
+                }
+
+                else -> {
+
+                    Text(
+                        "Phiên bản Minecraft",
+                        style =
+                            MaterialTheme
+                                .typography
+                                .titleMedium
+                    )
+
+                    Spacer(
+                        Modifier.height(8.dp)
+                    )
+
+                    LazyColumn(
+
+                        modifier =
+                            Modifier.weight(1f),
+
+                        verticalArrangement =
+                            Arrangement.spacedBy(8.dp)
+
+                    ) {
+
+                        items(versions) { version ->
+
+                            Card(
+
+                                modifier =
+                                    Modifier
+                                        .fillMaxWidth()
+
+                            ) {
+
+                                Row(
+
+                                    modifier =
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .padding(14.dp),
+
+                                    horizontalArrangement =
+                                        Arrangement
+                                            .SpaceBetween
+
+                                ) {
+
+                                    Column {
+
+                                        Text(
+                                            version.id,
+                                            style =
+                                                MaterialTheme
+                                                    .typography
+                                                    .titleMedium
+                                        )
+
+                                        Text(
+                                            version.type
+                                        )
+
+                                        Text(
+                                            "Java ${
+                                                JavaSelector
+                                                    .select(
+                                                        version.id
+                                                    )
+                                            }"
+                                        )
+                                    }
+
+                                    Button(
+
+                                        onClick = {
+                                            selected =
+                                                version
+                                        }
+
+                                    ) {
+
+                                        Text(
+                                            if (
+                                                selected?.id ==
+                                                version.id
+                                            )
+                                                "Đã chọn"
+                                            else
+                                                "Chọn"
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    selected?.let { version ->
+
+                        Spacer(
+                            Modifier.height(12.dp)
+                        )
+
+                        val plan =
+                            LaunchPlanBuilder
+                                .build(
+                                    version,
+                                    username
+                                )
+
+                        Card(
+                            modifier =
+                                Modifier.fillMaxWidth()
+                        ) {
+
+                            Column(
+                                modifier =
+                                    Modifier.padding(16.dp)
+                            ) {
+
+                                Text(
+                                    "Phiên bản đã chọn",
+                                    style =
+                                        MaterialTheme
+                                            .typography
+                                            .titleMedium
+                                )
+
+                                Text(
+                                    version.id
+                                )
+
+                                Text(
+                                    "Java ${plan.javaMajor}"
+                                )
+
+                                Text(
+                                    "Main: ${plan.mainClass}"
+                                )
+
+                                Spacer(
+                                    Modifier.height(8.dp)
+                                )
+
+                                Button(
+
+                                    onClick = {
+
+                                        // ==================================
+                                        // PHASE 2
+                                        // ==================================
+                                        //
+                                        // LaunchPlan đã được tạo.
+                                        //
+                                        // Chưa chạy Minecraft vì launcher
+                                        // chưa có:
+                                        //
+                                        // - Minecraft client download
+                                        // - Asset download
+                                        // - Library download hoàn chỉnh
+                                        // - Java runtime
+                                        // - LWJGL mobile
+                                        // - Native libraries
+                                        // - Authentication
+                                        //
+                                        // ==================================
+                                    },
+
+                                    modifier =
+                                        Modifier.fillMaxWidth()
+
+                                ) {
+
+                                    Text(
+                                        "LAUNCH"
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
